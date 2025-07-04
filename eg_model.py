@@ -5,11 +5,13 @@ from enum import Enum, auto
 from typing import List, Optional, Set, Dict
 
 class PredicateType(Enum):
+    """Enumeration for the type of a Predicate, following Dau's extensions."""
     RELATION = auto()
     FUNCTION = auto()
     CONSTANT = auto()
 
 class Context:
+    """Represents the Sheet of Assertion or a Cut, forming a tree structure."""
     def __init__(self, parent: Optional[Context] = None):
         self.id = str(uuid.uuid4())
         self.parent = parent
@@ -17,6 +19,7 @@ class Context:
         self.predicates: List[Predicate] = []
 
     def get_nesting_level(self) -> int:
+        """Calculates depth. SA=0. Even is positive, odd is negative."""
         level = 0
         p = self.parent
         while p:
@@ -25,6 +28,7 @@ class Context:
         return level
 
 class Ligature:
+    """Represents a single, continuous Line of Identity."""
     def __init__(self):
         self.id = str(uuid.uuid4())
         self.hooks: Set[Hook] = set()
@@ -37,40 +41,34 @@ class Ligature:
         if not self.hooks:
             raise ValueError("Ligature is not connected to any predicate.")
 
-        # Get the path of ancestors for the first hook
-        first_path = []
-        curr = list(self.hooks)[0].predicate.context
-        while curr:
-            first_path.append(curr)
-            curr = curr.parent
-        
-        common_ancestors = set(first_path)
-
-        # Find the intersection of ancestor paths for all other hooks
-        for hook in list(self.hooks)[1:]:
-            path_to_check = set()
+        paths = []
+        for hook in self.hooks:
+            path = []
             curr = hook.predicate.context
             while curr:
-                path_to_check.add(curr)
+                path.append(curr)
                 curr = curr.parent
-            common_ancestors.intersection_update(path_to_check)
+            paths.append(path)
+        
+        common_ancestors = set(paths[0])
+        for other_path in paths[1:]:
+            common_ancestors.intersection_update(set(other_path))
         
         if not common_ancestors:
-            # This case implies hooks are in completely separate graph trees,
-            # which shouldn't happen. The ultimate common ancestor is the SoA.
-             return list(self.hooks)[0].predicate.context # Fallback to shallowest hook's context parent
+             # This should not happen in a well-formed graph.
+             raise ValueError("Could not find a common ancestor for the ligature's hooks.")
         
-        # The LCA is the common ancestor with the highest nesting level.
         return max(common_ancestors, key=lambda c: c.get_nesting_level())
 
-
 class Hook:
+    """A connection point on a Predicate."""
     def __init__(self, predicate: Predicate, index: int):
         self.predicate = predicate
         self.index = index
         self.ligature: Optional[Ligature] = None
 
 class Predicate:
+    """Represents a Peirce 'spot': a relation, constant, or function."""
     def __init__(self, name: str, arity: int, p_type: PredicateType = PredicateType.RELATION):
         self.id = str(uuid.uuid4())
         self.name = name
@@ -80,5 +78,6 @@ class Predicate:
         self.context: Optional[Context] = None
 
 class ExistentialGraph:
+    """The top-level container for the graph."""
     def __init__(self):
         self.sheet_of_assertion = Context(parent=None)
