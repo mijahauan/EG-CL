@@ -160,5 +160,64 @@ class TestConstants(unittest.TestCase):
         self.assertEqual(translator.translate(), "true")
         print("OK")
 
+class TestFunctions(unittest.TestCase):
+    """Tests the implementation of functions."""
+    def setUp(self):
+        self.eg = ExistentialGraph(); self.editor = EGEditor(self.eg)
+        self.validator = Validator(self.eg); self.soa = self.eg.sheet_of_assertion
+        print(f"\n----- Running Function Test: {self._testMethodName} -----")
+
+    def test_function_translation(self):
+        """Tests that a function is translated into a CLIF functional term with equality."""
+        # Represents: y = add(x, "7")
+        p_add = self.editor.add_predicate("add", 3, self.soa, p_type=PredicateType.FUNCTION)
+        p_7 = self.editor.add_predicate("7", 1, self.soa, p_type=PredicateType.CONSTANT)
+        
+        # Create ligatures for x and y
+        lig_x = Ligature()
+        lig_y = Ligature()
+
+        # Connect inputs: hook0->x, hook1->"7"
+        self.editor.connect(p_add.hooks[0], p_add.hooks[0]) # connect to self to assign a ligature
+        p_add.hooks[0].ligature = lig_x
+        lig_x.hooks.add(p_add.hooks[0])
+        
+        self.editor.connect(p_add.hooks[1], p_7.hooks[0])
+        
+        # Connect output: hook2->y
+        self.editor.connect(p_add.hooks[2], p_add.hooks[2]) # connect to self to assign a ligature
+        p_add.hooks[2].ligature = lig_y
+        lig_y.hooks.add(p_add.hooks[2])
+
+        translator = ClifTranslator(self.eg)
+        actual = translator.translate()
+        expected = "(exists (x1 x2) (= x2 (add x1 7)))"
+        
+        print(f"  - Testing function translation.\n  - Expected: {expected}\n  - Actual:   {actual}")
+        self.assertEqual(actual, expected)
+        print("  - OK")
+
+    def test_functional_property_rule(self):
+        """Tests validation of the Functional Property (uniqueness) rule."""
+        # Represents y1 = add(x, 7) and y2 = add(x, 7)
+        p_x = self.editor.add_predicate("x", 1, self.soa, p_type=PredicateType.CONSTANT)
+        p_7 = self.editor.add_predicate("7", 1, self.soa, p_type=PredicateType.CONSTANT)
+        
+        p_add1 = self.editor.add_predicate("add", 3, self.soa, p_type=PredicateType.FUNCTION)
+        p_add2 = self.editor.add_predicate("add", 3, self.soa, p_type=PredicateType.FUNCTION)
+
+        # Connect inputs for first call (hooks 0 and 1)
+        self.editor.connect(p_add1.hooks[0], p_x.hooks[0])
+        self.editor.connect(p_add1.hooks[1], p_7.hooks[0])
+
+        # Connect inputs for second call (hooks 0 and 1)
+        self.editor.connect(p_add2.hooks[0], p_x.hooks[0])
+        self.editor.connect(p_add2.hooks[1], p_7.hooks[0])
+        
+        can_apply = self.validator.can_apply_functional_property(p_add1, p_add2)
+        print(f"  - Can apply functional property? Expected: True. Got: {can_apply}")
+        self.assertTrue(can_apply)
+        print("  - OK")
+        
 if __name__ == '__main__':
     unittest.main()

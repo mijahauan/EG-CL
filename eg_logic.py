@@ -104,6 +104,20 @@ class Validator:
     def can_erase_isolated_constant(self, predicate: Predicate) -> bool:
         if predicate.type != PredicateType.CONSTANT: return False
         return not any(h.ligature for h in predicate.hooks)
+    def can_apply_functional_property(self, p1: Predicate, p2: Predicate) -> bool:
+        """Checks if two function applications have identical inputs."""
+        if not (p1.type == PredicateType.FUNCTION and p2.type == PredicateType.FUNCTION): return False
+        if p1.name != p2.name or p1.arity != p2.arity: return False
+        
+        # Check if all input hooks are connected to the same ligatures
+        # The last hook is the output, so we check up to arity - 1.
+        for i in range(p1.arity - 1):
+            h1 = p1.hooks[i]
+            h2 = p2.hooks[i]
+            # Both hooks must be connected, and to the same ligature
+            if not (h1.ligature and h2.ligature and h1.ligature.id == h2.ligature.id):
+                return False
+        return True
 
 class ClifTranslator:
     def __init__(self, graph: ExistentialGraph):
@@ -133,23 +147,53 @@ class ClifTranslator:
         for i, ligature in enumerate(sorted_ligatures): self.variable_map[ligature.id] = f"x{i+1}"
         return self._recursive_translate(self.graph.sheet_of_assertion)
     def _recursive_translate(self, context: Context) -> str:
-        starting_ligs = [lig for lig in self._get_all_ligatures() if lig.get_starting_context() == context and lig.id not in self.constant_map]
+        """Recursively translates a context and its contents into a CLIF substring."""
+        # This helper needs access to the instance's variable_map and constant_map
+        all_ligs = self._get_all_ligatures()
+        
+        starting_ligs = [
+            lig for lig in all_ligs 
+            if lig.get_starting_context() == context and lig.id not in self.constant_map
+        ]
         quantified_vars = sorted([self.variable_map.get(lig.id) for lig in starting_ligs if lig.id in self.variable_map])
-        predicate_atoms = []
+
+        atoms = []
         for p in context.predicates:
-            if p.type == PredicateType.CONSTANT: continue
+            if p.type == PredicateType.CONSTANT:
+                continue
+
             hook_terms = []
             for h in p.hooks:
                 if h.ligature:
                     term = self.constant_map.get(h.ligature.id, self.variable_map.get(h.ligature.id))
-                    if term: hook_terms.append(term)
-            if len(hook_terms) != p.arity: raise ValueError(f"Arity mismatch on {p.name}")
-            args_str = f" {' '.join(hook_terms)}" if hook_terms else ""; predicate_atoms.append(f"({p.name}{args_str})")
+                    if term:
+                        hook_terms.append(term)
+            
+            if len(hook_terms) != p.arity:
+                raise ValueError(f"Arity mismatch on {p.name}")
+
+            # NEW LOGIC FOR FUNCTIONS STARTS HERE
+            if p.type == PredicateType.FUNCTION:
+                # An n-ary function has n-1 inputs and 1 output (the last hook)
+                if p.arity < 1:
+                    raise ValueError(f"Function {p.name} must have arity of at least 1.")
+                
+                output_term = hook_terms[-1]
+                input_terms = hook_terms[:-1]
+                args_str = f" {' '.join(input_terms)}" if input_terms else ""
+                # Format as: (= <output> (<function_name> <inputs>...))
+                atoms.append(f"(= {output_term} ({p.name}{args_str}))")
+            else: # It's a RELATION
+                args_str = f" {' '.join(hook_terms)}" if hook_terms else ""
+                atoms.append(f"({p.name}{args_str})")
+        
         child_translations = [f"(not {self._recursive_translate(child)})" for child in context.children]
-        all_parts = sorted(predicate_atoms) + sorted(child_translations)
+        all_parts = sorted(atoms) + sorted(child_translations)
+        
         content = ""
         if len(all_parts) > 1: content = f"(and {' '.join(all_parts)})"
         elif len(all_parts) == 1: content = all_parts[0]
+        
         if quantified_vars: return f"(exists ({' '.join(quantified_vars)}) {content})"
         return content if content else "true"
 
