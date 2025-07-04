@@ -59,7 +59,7 @@ class EGEditor:
         if lig1 and lig2:
             if lig1.id == lig2.id: return
             if len(lig1.hooks) < len(lig2.hooks): lig1, lig2 = lig2, lig1
-            for hook in lig2.hooks:
+            for hook in list(lig2.hooks):
                 hook.ligature = lig1
                 lig1.hooks.add(hook)
         elif lig1:
@@ -79,6 +79,7 @@ class EGEditor:
         id_map: Dict[str, Union[Predicate, Context, Ligature]] = {}
         new_elements: Set[Union[Predicate, Context, Ligature]] = set()
         all_elements = list(source_subgraph.elements)
+
         for element in all_elements:
             if isinstance(element, Predicate):
                 new_p = Predicate(element.name, element.arity, element.type)
@@ -88,6 +89,7 @@ class EGEditor:
                 new_c = Context()
                 id_map[element.id] = new_c
                 new_elements.add(new_c)
+
         for original_element in all_elements:
             if original_element.id not in id_map or not isinstance(original_element, (Predicate, Context)): continue
             new_element = id_map[original_element.id]
@@ -99,6 +101,7 @@ class EGEditor:
             elif isinstance(new_element, Predicate):
                 new_element.context = new_parent
                 new_parent.predicates.append(new_element)
+
         ligatures_in_subgraph = {elem for elem in all_elements if isinstance(elem, Ligature)}
         for lig in ligatures_in_subgraph:
             is_internal = all(h.predicate.id in id_map for h in lig.hooks)
@@ -111,40 +114,36 @@ class EGEditor:
                     new_hook = new_predicate.hooks[original_hook.index]
                     new_hook.ligature = new_lig
                     new_lig.hooks.add(new_hook)
+
         return Subgraph(new_elements), id_map
 
     def iterate(self, source_subgraph: Subgraph, target_context: Context) -> Subgraph:
         if not Validator(self.graph).can_iterate(source_subgraph, target_context):
             raise ValueError("Invalid iteration: Target context is not valid.")
+        
         copied_subgraph, id_map = self._copy_subgraph(source_subgraph, target_context)
+
         ligatures_in_source = {elem for elem in source_subgraph.elements if isinstance(elem, Ligature)}
         for lig in ligatures_in_source:
             if lig.id not in id_map:
-                for original_hook in lig.hooks:
+                for original_hook in list(lig.hooks):
                     if original_hook.predicate.id in id_map:
                         new_predicate = id_map[original_hook.predicate.id]
                         new_hook = new_predicate.hooks[original_hook.index]
                         self.connect(original_hook, new_hook)
         return copied_subgraph
-
-    def deiterate(self, subgraph_to_erase: Subgraph):
-        """Erases a subgraph after validation confirms it is a redundant copy."""
-        if not Validator(self.graph).can_deiterate(subgraph_to_erase):
-            raise ValueError("Invalid de-iteration: The selection is not a valid redundant copy.")
         
-        all_hooks = {h for p in subgraph_to_erase.elements if isinstance(p, Predicate) for h in p.hooks}
-        for hook in all_hooks:
-            if hook.ligature:
-                hook.ligature.hooks.discard(hook)
-                hook.ligature = None
-
+    def deiterate(self, subgraph_to_erase: Subgraph):
+        if not Validator(self.graph).can_deiterate(subgraph_to_erase):
+            raise ValueError("Invalid de-iteration.")
+        
         for element in list(subgraph_to_erase.elements):
             if isinstance(element, Predicate):
-                if element.context and element in element.context.predicates:
-                    element.context.predicates.remove(element)
+                for hook in element.hooks:
+                    if hook.ligature: hook.ligature.hooks.discard(hook)
+                if element.context: element.context.predicates.remove(element)
             elif isinstance(element, Context):
-                if element.parent and element in element.parent.children:
-                    element.parent.children.remove(element)
+                if element.parent: element.parent.children.remove(element)
 
 # --- Part 3: The Validator Logic ---
 class Validator:
@@ -171,11 +170,9 @@ class Validator:
         return True
 
     def _get_subgraphs_on_area(self, context: Context) -> List[Subgraph]:
-        """(Helper) Finds all single-predicate subgraphs on a given context's area."""
         return [Subgraph({p}) for p in context.predicates]
 
     def _are_isomorphic(self, g1: Subgraph, g2: Subgraph) -> bool:
-        """(Helper) A simplified check for structural isomorphism."""
         g1_preds = {p for p in g1.elements if isinstance(p, Predicate)}
         g2_preds = {p for p in g2.elements if isinstance(p, Predicate)}
         if len(g1_preds) != len(g2_preds): return False
@@ -184,19 +181,13 @@ class Validator:
         return g1_sigs == g2_sigs
 
     def can_deiterate(self, selection: Subgraph) -> bool:
-        """Corrected logic: Checks if a selection is a valid copy."""
-        if not self.graph:
-             raise ValueError("Validator must be initialized with a graph to check de-iteration.")
-        if not selection.root_context or not selection.root_context.parent:
-            return False
-
-        # Start search for an original in the parent context and move outwards.
+        if not self.graph: raise ValueError("Validator must be initialized with a graph.")
+        if not selection.root_context or not selection.root_context.parent: return False
         search_context = selection.root_context.parent
         while search_context:
             potential_originals = self._get_subgraphs_on_area(search_context)
             for original in potential_originals:
                 if self._are_isomorphic(selection, original):
-                    # NOTE: A full check would also validate the connecting ligatures.
                     return True
             search_context = search_context.parent
         return False
@@ -247,6 +238,7 @@ class ClifTranslator:
         return content if content else "true"
 
 class ClifParser:
+    """(Placeholder) Parses a CLIF string and builds an ExistentialGraph model."""
     def parse(self, clif_string: str) -> ExistentialGraph:
         print("\nNOTE: ClifParser.parse() is a placeholder for reverse translation.")
         return ExistentialGraph()
