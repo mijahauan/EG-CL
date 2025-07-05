@@ -45,14 +45,36 @@ class TestTransformations(unittest.TestCase):
         print(f"\n----- Running Transformation Test: {self._testMethodName} -----")
     def test_can_insert_and_erase(self):
         """Validates the Insertion (odd contexts) and Erasure (even contexts) rules."""
-        cut1 = self.editor.add_cut(self.soa); p_on_soa = self.editor.add_predicate("P", 0, self.soa)
+        cut1 = self.editor.add_cut(self.soa)
+        p_on_soa = self.editor.add_predicate("P", 0, self.soa)
         p_in_cut1 = self.editor.add_predicate("Q", 0, cut1)
+        
+        # To test the rule, we must operate on a Subgraph, not a raw Predicate.
+        subgraph_on_soa = Subgraph({p_on_soa})
+        subgraph_in_cut1 = Subgraph({p_in_cut1})
+        
         print("  - Validating insertion/erasure permissions by context parity.")
         self.assertFalse(self.validator.can_insert(self.soa))
         self.assertTrue(self.validator.can_insert(cut1))
-        self.assertTrue(self.validator.can_erase(p_on_soa))
-        self.assertFalse(self.validator.can_erase(p_in_cut1))
-        print("  - OK: Rules validated.")
+        
+        # Now pass the Subgraph objects to the validator.
+        self.assertTrue(self.validator.can_erase(subgraph_on_soa))
+        self.assertFalse(self.validator.can_erase(subgraph_in_cut1))
+        print("  - OK: Rules validated.")    
+    def test_add_double_cut_around_subgraph(self):
+        """Tests wrapping an existing predicate with a double cut."""
+        p = self.editor.add_predicate("P", 0, self.soa)
+        subgraph = Subgraph({p})
+        self.assertTrue(self.validator.can_add_double_cut())
+        self.editor.wrap_subgraph_with_double_cut(subgraph)
+        outer_cut = self.soa.children[0]
+        inner_cut = outer_cut.children[0]
+        self.assertIn(p, inner_cut.predicates)
+        expected_clif = "(not (not (P)))"
+        actual_clif = ClifTranslator(self.eg).translate()
+        print(f"  - Testing wrap with double cut.\n  - Expected: {expected_clif}\n  - Actual:   {actual_clif}")
+        self.assertEqual(actual_clif, expected_clif)
+        print("  - OK")
     def test_can_remove_double_cut(self):
         """Validates the basic check for the Double Cut rule."""
         dc_outer = self.editor.add_cut(self.soa); self.editor.add_cut(dc_outer)
@@ -97,6 +119,7 @@ class TestTransformations(unittest.TestCase):
         self.assertEqual(translator.translate(), "(not (and (P) (not true)))")
         print("  - OK: De-iteration validation and transformation are correct.")
 
+
 class TestClifTranslator(unittest.TestCase):
     def setUp(self):
         self.eg = ExistentialGraph(); self.editor = EGEditor(self.eg); self.soa = self.eg.sheet_of_assertion
@@ -139,6 +162,28 @@ class TestClifTranslator(unittest.TestCase):
         expected = "(not (exists (x1) (and (not (animal x1)) (not (cat x1)))))"
         actual = translator.translate(); print(f"  - Testing ((cat-)(animal-)).\n  - Expected: {expected}\n  - Actual:   {actual}")
         self.assertEqual(actual, expected); print("OK")
+    def test_negated_identity(self):
+        """Tests the translation of a graph with negated identity."""
+        # Represents: (exists (x y) (and (sun x) (sun y) (not (= x y))))
+        # This is built by putting the identity predicate inside a cut.
+        p_sun1 = self.editor.add_predicate("sun", 1, self.soa)
+        p_sun2 = self.editor.add_predicate("sun", 1, self.soa)
+
+        # The identity assertion is inside the negative context
+        neg_cut = self.editor.add_cut(self.soa)
+        p_eq = self.editor.add_predicate("=", 2, neg_cut)
+
+        # Connect the two suns to the identity predicate
+        self.editor.connect(p_sun1.hooks[0], p_eq.hooks[0])
+        self.editor.connect(p_sun2.hooks[0], p_eq.hooks[1])
+
+        translator = ClifTranslator(self.eg)
+        expected = "(exists (x1 x2) (and (sun x1) (sun x2) (not (= x1 x2))))"
+        actual = translator.translate()
+        print(f"  - Testing negated identity.\n  - Expected: {expected}\n  - Actual:   {actual}")
+        self.assertEqual(actual, expected)
+        print("  - OK")
+
 
 class TestConstants(unittest.TestCase):
     """Tests the implementation of constants."""
@@ -159,6 +204,24 @@ class TestConstants(unittest.TestCase):
         translator = ClifTranslator(self.eg)
         self.assertEqual(translator.translate(), "true")
         print("OK")
+    def test_apply_constant_identity_rule(self):
+        """Tests the application of the Constant Identity Rule transformation."""
+        p_socrates1 = self.editor.add_predicate("Socrates", 1, self.soa, p_type=PredicateType.CONSTANT)
+        p_socrates2 = self.editor.add_predicate("Socrates", 1, self.soa, p_type=PredicateType.CONSTANT)
+
+        # Connect hooks to themselves to create distinct ligatures initially
+        self.editor.connect(p_socrates1.hooks[0], p_socrates1.hooks[0])
+        self.editor.connect(p_socrates2.hooks[0], p_socrates2.hooks[0])
+
+        # Ensure they are initially on different ligatures
+        self.assertNotEqual(p_socrates1.hooks[0].ligature.id, p_socrates2.hooks[0].ligature.id)
+
+        # Apply the rule
+        self.editor.apply_constant_identity(p_socrates1, p_socrates2)
+
+        # Now, they should be on the same ligature
+        self.assertEqual(p_socrates1.hooks[0].ligature.id, p_socrates2.hooks[0].ligature.id)
+        print("  - OK: Constant Identity Rule correctly merged ligatures.")        
 
 class TestFunctions(unittest.TestCase):
     """Tests the implementation of functions."""
@@ -218,6 +281,84 @@ class TestFunctions(unittest.TestCase):
         print(f"  - Can apply functional property? Expected: True. Got: {can_apply}")
         self.assertTrue(can_apply)
         print("  - OK")
+        
+    def test_apply_functional_property_rule(self):
+        """Tests the application of the Functional Property Rule transformation."""
+        # Represents y1 = add(x, 7) and y2 = add(x, 7)
+        p_x = self.editor.add_predicate("x", 1, self.soa, p_type=PredicateType.CONSTANT)
+        p_7 = self.editor.add_predicate("7", 1, self.soa, p_type=PredicateType.CONSTANT)
+        
+        p_add1 = self.editor.add_predicate("add", 3, self.soa, p_type=PredicateType.FUNCTION)
+        p_add2 = self.editor.add_predicate("add", 3, self.soa, p_type=PredicateType.FUNCTION)
+
+        # Connect inputs for both function calls to be identical
+        self.editor.connect(p_add1.hooks[0], p_x.hooks[0]) # input 1 for add1
+        self.editor.connect(p_add1.hooks[1], p_7.hooks[0]) # input 2 for add1
+        self.editor.connect(p_add2.hooks[0], p_x.hooks[0]) # input 1 for add2
+        self.editor.connect(p_add2.hooks[1], p_7.hooks[0]) # input 2 for add2
+        
+        # Connect outputs to themselves to create distinct ligatures initially
+        self.editor.connect(p_add1.hooks[2], p_add1.hooks[2]) # output for add1
+        self.editor.connect(p_add2.hooks[2], p_add2.hooks[2]) # output for add2
+        
+        # Ensure the outputs are initially on different ligatures
+        self.assertNotEqual(p_add1.hooks[2].ligature.id, p_add2.hooks[2].ligature.id)
+        
+        # Apply the rule
+        self.editor.apply_functional_property(p_add1, p_add2)
+        
+        # Now, the outputs should be on the same ligature
+        self.assertEqual(p_add1.hooks[2].ligature.id, p_add2.hooks[2].ligature.id)
+        print("  - OK: Functional Property Rule correctly merged output ligatures.")
+
+
+class TestRoundTrip(unittest.TestCase):
+    """Tests the full round-trip translation: EG -> CLIF -> EG -> CLIF."""
+    def setUp(self):
+        self.eg = ExistentialGraph()
+        self.editor = EGEditor(self.eg)
+        self.soa = self.eg.sheet_of_assertion
+        print(f"\n----- Running Round-Trip Test: {self._testMethodName} -----")
+
+    def test_s_expression_parser(self):
+        """Tests the internal CLIF string parser."""
+        parser = ClifParser()
+        test_string = "(and (P x1) (not (Q y1)))"
+        tokens = parser._tokenize(test_string)
+        ast, _ = parser._parse_s_expression(tokens)
+        
+        expected_ast = ['and', ['P', 'x1'], ['not', ['Q', 'y1']]]
+        print(f"  - Testing S-expression parser.\n  - Expected: {expected_ast}\n  - Actual:   {ast}")
+        self.assertEqual(ast, expected_ast)
+        print("  - OK")
+
+    def test_round_trip_simple(self):
+        """Tests a simple round-trip with relations and quantifiers."""
+        # 1. Arrange: Create the 'cat on mat' graph
+        p_cat = self.editor.add_predicate("cat", 1, self.soa)
+        p_mat = self.editor.add_predicate("mat", 1, self.soa)
+        p_on = self.editor.add_predicate("on", 2, self.soa)
+        self.editor.connect(p_cat.hooks[0], p_on.hooks[0])
+        self.editor.connect(p_mat.hooks[0], p_on.hooks[1])
+        
+        # 2. Act 1: Translate to CLIF
+        translator1 = ClifTranslator(self.eg)
+        clif_string1 = translator1.translate()
+        print(f"  - Original CLIF: {clif_string1}")
+        
+        # 3. Act 2: Parse back into a new EG model
+        parser = ClifParser()
+        new_eg = parser.parse(clif_string1)
+        
+        # 4. Act 3: Translate the new model back to CLIF
+        translator2 = ClifTranslator(new_eg)
+        clif_string2 = translator2.translate()
+        print(f"  - Round-trip CLIF: {clif_string2}")
+
+        # 5. Assert: The two strings must be identical
+        self.assertEqual(clif_string1, clif_string2)
+        print("  - OK")
+
         
 if __name__ == '__main__':
     unittest.main()

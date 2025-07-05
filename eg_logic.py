@@ -1,6 +1,7 @@
 # eg_logic.py
 from eg_model import *
 from typing import Set, Dict, List, Tuple, Union
+import re
 
 class Subgraph:
     def __init__(self, elements: Set[Union[Predicate, Context, Ligature]]):
@@ -23,6 +24,7 @@ class Subgraph:
 class EGEditor:
     def __init__(self, graph: ExistentialGraph):
         self.graph = graph
+        self.validator = Validator(graph)
     def add_predicate(self, name: str, arity: int, context: Context, p_type: PredicateType = PredicateType.RELATION) -> Predicate:
         predicate = Predicate(name, arity, p_type); predicate.context = context
         context.predicates.append(predicate); return predicate
@@ -74,12 +76,91 @@ class EGEditor:
                 if element.context: element.context.predicates.remove(element)
             elif isinstance(element, Context):
                 if element.parent: element.parent.children.remove(element)
+    def wrap_subgraph_with_double_cut(self, subgraph_to_wrap: Subgraph):
+        """Wraps an existing subgraph with a new double cut."""
+        if not Validator().can_add_double_cut():
+            # This check is trivial and always true, but good practice.
+            raise ValueError("This operation should always be valid.")
+
+        parent_context = subgraph_to_wrap.root_context
+        if not parent_context:
+            # Cannot wrap a subgraph that doesn't exist in a context (e.g., the whole SoA).
+            raise ValueError("Cannot wrap a subgraph that has no root context.")
+        
+        # Create the new double cut within the subgraph's original context.
+        inner_cut = self.add_double_cut(parent_context)
+        
+        # Re-parent the root elements of the subgraph to the new inner cut.
+        # Iterate over a copy of the elements, as we will be modifying the original lists.
+        for element in list(subgraph_to_wrap.elements):
+            # Check if this element is a direct child of the subgraph's root context.
+            if isinstance(element, Predicate):
+                if element.context and element.context.id == parent_context.id:
+                    parent_context.predicates.remove(element)
+                    inner_cut.predicates.append(element)
+                    element.context = inner_cut
+            elif isinstance(element, Context):
+                 if element.parent and element.parent.id == parent_context.id:
+                    parent_context.children.remove(element)
+                    inner_cut.children.append(element)
+                    element.parent = inner_cut
+    def erase_subgraph(self, subgraph_to_erase: Subgraph):
+        """Erases all elements of a validated subgraph from the model."""
+        if not self.validator.can_erase(subgraph_to_erase):
+            raise ValueError("Invalid erase operation.")
+
+        for element in list(subgraph_to_erase.elements):
+            if isinstance(element, Predicate):
+                # Disconnect all hooks of the predicate first
+                for hook in element.hooks:
+                    if hook.ligature:
+                        hook.ligature.hooks.discard(hook)
+                # Remove predicate from its context
+                if element.context:
+                    element.context.predicates.remove(element)
+            elif isinstance(element, Context):
+                # Remove cut from its parent
+                if element.parent:
+                    element.parent.children.remove(element)
+    def apply_functional_property(self, p1: Predicate, p2: Predicate):
+        """
+        Applies the Functional Property Rule by connecting the output hooks
+        of two function predicates that have identical inputs.
+        [cite_start]This asserts that their outputs are identical. [cite: 548-549]
+        """
+        if not self.validator.can_apply_functional_property(p1, p2):
+            raise ValueError("Invalid Functional Property rule application.")
+        
+        # The last hook of a function is its output.
+        output_hook1 = p1.hooks[-1]
+        output_hook2 = p2.hooks[-1]
+        self.connect(output_hook1, output_hook2)
+        print(f"  - Applied Functional Property Rule: Connected outputs of '{p1.name}'.")
+
+    def apply_constant_identity(self, p1: Predicate, p2: Predicate):
+        """
+        Applies the Constant Identity Rule by connecting the hooks of two
+        identical constant predicates. [cite_start]This asserts their identity. [cite: 4909]
+        """
+        if not self.validator.can_apply_constant_identity(p1, p2):
+            raise ValueError("Invalid Constant Identity rule application.")
+
+        # Constants have an arity of 1, so they have one hook.
+        self.connect(p1.hooks[0], p2.hooks[0])
+        print(f"  - Applied Constant Identity Rule: Connected two instances of '{p1.name}'.")
 
 class Validator:
     def __init__(self, graph: ExistentialGraph = None): self.graph = graph
     def can_insert(self, context: Context) -> bool: return context.get_nesting_level() % 2 != 0
-    def can_erase(self, predicate: Predicate) -> bool: return predicate.context.get_nesting_level() % 2 == 0
     def can_remove_double_cut(self, outer_cut: Context) -> bool: return len(outer_cut.children) == 1 and not outer_cut.predicates
+    def can_erase(self, subgraph_to_erase: Subgraph) -> bool:
+        """
+        Checks if a subgraph can be erased. Allowed only if the subgraph as a whole
+        [cite_start]resides in a positive (evenly enclosed) context [cite: 3223-3224].
+        """
+        if not subgraph_to_erase or not subgraph_to_erase.root_context:
+            return False
+        return subgraph_to_erase.root_context.get_nesting_level() % 2 == 0
     def can_iterate(self, source_subgraph: Subgraph, target_context: Context) -> bool:
         source_context = source_subgraph.root_context
         if not source_context or not target_context: return False
@@ -92,6 +173,9 @@ class Validator:
         if len(g1_preds) != len(g2_preds): return False
         g1_sigs = sorted([(p.name, p.arity, p.type) for p in g1_preds]); g2_sigs = sorted([(p.name, p.arity, p.type) for p in g2_preds])
         return g1_sigs == g2_sigs
+    def can_add_double_cut(self) -> bool:
+        """Confirms that adding a double cut is always a valid operation."""
+        return True
     def can_deiterate(self, selection: Subgraph) -> bool:
         if not self.graph: raise ValueError("Validator needs a graph to check de-iteration.")
         if not selection.root_context or not selection.root_context.parent: return False
@@ -118,6 +202,17 @@ class Validator:
             if not (h1.ligature and h2.ligature and h1.ligature.id == h2.ligature.id):
                 return False
         return True
+    def can_apply_constant_identity(self, p1: Predicate, p2: Predicate) -> bool:
+        """
+        Checks if the Constant Identity rule can be applied.
+        This rule allows asserting identity between two instances of the same constant.
+        [cite_start][cite: 5885, 4909]
+        """
+        if not (p1.type == PredicateType.CONSTANT and p2.type == PredicateType.CONSTANT):
+            return False
+        if p1.name == p2.name:
+            return True
+        return False
 
 class ClifTranslator:
     def __init__(self, graph: ExistentialGraph):
@@ -170,10 +265,15 @@ class ClifTranslator:
                         hook_terms.append(term)
             
             if len(hook_terms) != p.arity:
-                raise ValueError(f"Arity mismatch on {p.name}")
+                raise ValueError(f"Arity mismatch on predicate '{p.name}'")
 
-            # NEW LOGIC FOR FUNCTIONS STARTS HERE
-            if p.type == PredicateType.FUNCTION:
+            # --- NEW LOGIC FOR EQUALITY ---
+            if p.name == "=":
+                if p.arity != 2:
+                    raise ValueError("Equality predicate must have arity of 2.")
+                atoms.append(f"(= {hook_terms[0]} {hook_terms[1]})")
+            # --- END NEW LOGIC ---
+            elif p.type == PredicateType.FUNCTION:
                 # An n-ary function has n-1 inputs and 1 output (the last hook)
                 if p.arity < 1:
                     raise ValueError(f"Function {p.name} must have arity of at least 1.")
@@ -186,7 +286,7 @@ class ClifTranslator:
             else: # It's a RELATION
                 args_str = f" {' '.join(hook_terms)}" if hook_terms else ""
                 atoms.append(f"({p.name}{args_str})")
-        
+
         child_translations = [f"(not {self._recursive_translate(child)})" for child in context.children]
         all_parts = sorted(atoms) + sorted(child_translations)
         
@@ -197,8 +297,107 @@ class ClifTranslator:
         if quantified_vars: return f"(exists ({' '.join(quantified_vars)}) {content})"
         return content if content else "true"
 
+# This new class replaces the old placeholder at the end of eg_logic.py
+
 class ClifParser:
-    """(Placeholder) Parses a CLIF string and builds an ExistentialGraph model."""
+    """Parses a CLIF string and builds an ExistentialGraph model."""
+
+    def _tokenize(self, clif_string: str) -> List[str]:
+        """A simple lexer to split a CLIF string into tokens."""
+        return re.findall(r'\(|\)|[\w\d:-]+|="?|"[^"]*"', clif_string)
+
+    def _parse_s_expression(self, tokens: List[str]) -> Tuple[list, List[str]]:
+        """Recursively parses a flat list of tokens into a nested list (S-expression)."""
+        if not tokens:
+            raise ValueError("Unexpected EOF while parsing")
+        
+        token = tokens.pop(0)
+        if token == '(':
+            ast = []
+            while tokens[0] != ')':
+                sub_ast, remaining_tokens = self._parse_s_expression(tokens)
+                ast.append(sub_ast)
+                tokens = remaining_tokens
+            tokens.pop(0) # Pop off ')'
+            return ast, tokens
+        else:
+            return token, tokens
+
     def parse(self, clif_string: str) -> ExistentialGraph:
-        print("\nNOTE: ClifParser.parse() is a placeholder.")
-        return ExistentialGraph()
+        """Top-level method to parse a CLIF string into a full EG model."""
+        tokens = self._tokenize(clif_string)
+        if not tokens:
+            return ExistentialGraph() # Return empty graph for empty string
+        
+        ast, _ = self._parse_s_expression(tokens)
+        
+        graph = ExistentialGraph()
+        editor = EGEditor(graph)
+        self._build_graph_from_ast(ast, editor, graph.sheet_of_assertion, {})
+        return graph
+
+    def _build_graph_from_ast(self, ast: list, editor: EGEditor, context: Context, var_map: Dict[str, Ligature]):
+        """Recursively builds the EG data model from a CLIF AST."""
+        if not isinstance(ast, list) or not ast:
+            return
+
+        operator = ast[0]
+        
+        if operator == 'exists':
+            # Create new ligatures for quantified variables
+            for var_name in ast[1]:
+                var_map[var_name] = Ligature()
+            self._build_graph_from_ast(ast[2], editor, context, var_map)
+        
+        elif operator == 'not':
+            new_cut = editor.add_cut(context)
+            self._build_graph_from_ast(ast[1], editor, new_cut, var_map)
+
+        elif operator == 'and':
+            for conjunct in ast[1:]:
+                self._build_graph_from_ast(conjunct, editor, context, var_map)
+
+        elif operator == '=':
+            # This is a function definition, e.g., ['=', 'y1', ['add', 'x1', '7']]
+            output_term_name = ast[1]
+            func_expr = ast[2]
+            func_name = func_expr[0]
+            input_term_names = func_expr[1:]
+            
+            # Arity is inputs + 1 for the output
+            p_func = editor.add_predicate(func_name, len(input_term_names) + 1, context, p_type=PredicateType.FUNCTION)
+            
+            # Connect input hooks
+            for i, term_name in enumerate(input_term_names):
+                if term_name not in var_map: # It's a constant
+                     p_const = editor.add_predicate(term_name, 1, context, p_type=PredicateType.CONSTANT)
+                     editor.connect(p_func.hooks[i], p_const.hooks[0])
+                else: # It's a variable
+                    editor.connect(p_func.hooks[i], p_func.hooks[i]) # Create a placeholder hook connection
+                    p_func.hooks[i].ligature = var_map[term_name]
+                    var_map[term_name].hooks.add(p_func.hooks[i])
+            
+            # Connect output hook
+            output_ligature = var_map.get(output_term_name)
+            if not output_ligature:
+                output_ligature = Ligature()
+                var_map[output_term_name] = output_ligature
+            editor.connect(p_func.hooks[-1], p_func.hooks[-1])
+            p_func.hooks[-1].ligature = output_ligature
+            output_ligature.hooks.add(p_func.hooks[-1])
+
+        else: # It's a relation atom, e.g., ['cat', 'x1']
+            pred_name = ast[0]
+            term_names = ast[1:]
+            
+            pred = editor.add_predicate(pred_name, len(term_names), context)
+            
+            for i, term_name in enumerate(term_names):
+                if term_name not in var_map: # It's a constant
+                     p_const = editor.add_predicate(term_name, 1, context, p_type=PredicateType.CONSTANT)
+                     editor.connect(pred.hooks[i], p_const.hooks[0])
+                else: # It's a variable
+                    ligature = var_map[term_name]
+                    editor.connect(pred.hooks[i], pred.hooks[i]) # Create placeholder connection
+                    pred.hooks[i].ligature = ligature
+                    ligature.hooks.add(pred.hooks[i])
