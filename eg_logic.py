@@ -148,3 +148,44 @@ class ClifTranslator:
         if quantified_vars:
             return f"(exists ({' '.join(sorted(list(quantified_vars)))}) {content or 'true'})"
         return content or "true"
+
+class Validator:
+    def __init__(self, graph: ExistentialGraph):
+        self.graph = graph
+
+    def is_positive(self, node_id: str) -> bool:
+        """A context is positive if it's evenly enclosed (nesting level 0, 2, 4...)."""
+        return self.graph.get_nesting_level(node_id) % 2 == 0
+
+    def is_negative(self, node_id: str) -> bool:
+        """A context is negative if it's oddly enclosed (nesting level 1, 3, 5...)."""
+        return not self.is_positive(node_id)
+
+    def can_insert(self, parent_cut_id: str) -> bool:
+        """Insertion is permitted in any negative context."""
+        return self.is_negative(parent_cut_id)
+
+    def can_erase(self, subgraph: Subgraph) -> bool:
+        """Erasure is permitted for any subgraph on a positive context."""
+        if not subgraph.root_context_id: return False
+        return self.is_positive(subgraph.root_context_id)
+
+    def can_iterate(self, subgraph: Subgraph, target_cut_id: str) -> bool:
+        """
+        Iteration is permitted if the target context is nested deeper than
+        the source context.
+        """
+        source_cut_id = subgraph.root_context_id
+        if not source_cut_id or not target_cut_id: return False
+        
+        source_level = self.graph.get_nesting_level(source_cut_id)
+        target_level = self.graph.get_nesting_level(target_cut_id)
+        
+        return target_level > source_level
+
+    def can_deiterate(self, subgraph: Subgraph) -> bool:
+        """De-iteration is permitted if an isomorphic copy exists in a less-nested context."""
+        # This requires the complex isomorphism check, which can be refined later.
+        # For now, this is a placeholder for the logic.
+        print("WARN: can_deiterate validation is not fully implemented.")
+        return False
