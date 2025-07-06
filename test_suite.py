@@ -151,6 +151,29 @@ class TestSessionManagement(unittest.TestCase):
         self.assertEqual(session.history[2].parameters, loaded_session.history[2].parameters)
         print("  - OK: Serialization round-trip successful.")
 
+class TestTranslation(unittest.TestCase):
+    def setUp(self):
+        self.graph = ExistentialGraph()
+        self.editor = EGEditor(self.graph)
+        self.soa_id = self.graph.root_id
+        print(f"\n----- Running Translation Test: {self._testMethodName} -----")
+
+    def test_simple_negation(self):
+        cut_id, _ = self.editor.add_cut(self.soa_id)
+        self.editor.add_predicate("P", 0, cut_id)
+        translator = ClifTranslator(self.graph)
+        self.assertEqual(translator.translate(), "(not (P))")
+        print("  - OK: Simple negation translates correctly.")
+
+    def test_quantified_statement(self):
+        p_id, _ = self.editor.add_predicate("Man", 1, self.soa_id)
+        ep = {"node_id": p_id, "hook_index": 0}
+        self.editor.sever_endpoint(ep) # Creates a singly-connected line
+        translator = ClifTranslator(self.graph)
+        # Should be "There exists something that is a Man"
+        self.assertEqual(translator.translate(), "(exists (x1) (Man x1))")
+        print("  - OK: Quantified statement translates correctly.")
+
 
 if __name__ == '__main__':
     unittest.main()

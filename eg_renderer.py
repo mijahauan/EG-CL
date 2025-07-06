@@ -9,16 +9,11 @@ class Renderer:
     def __init__(self, graph: ExistentialGraph):
         self.graph = graph
         self.config = {
-            "padding": 15,
-            "cut_padding": 20,
-            "predicate_padding_x": 10,
-            "predicate_padding_y": 5,
-            "font_size": 16,
-            "font_family": "Arial, Helvetica, sans-serif",
-            "stroke_width": 2,
-            "cut_color": "black",
-            "ligature_color": "black",
-            "text_color": "black",
+            "padding": 15, "cut_padding": 20, "predicate_padding_x": 10,
+            "predicate_padding_y": 5, "font_size": 16,
+            "font_family": "Arial, Helvetica, sans-serif", "stroke_width": 2,
+            "cut_color": "black", "ligature_color": "black", "text_color": "black",
+            "line_stub_length": 15
         }
         self.layout: Dict[str, Dict[str, float]] = {}
 
@@ -89,22 +84,64 @@ class Renderer:
             )
         return svg_parts
 
+    def _render_ligatures(self, parent_offset_x: float, parent_offset_y: float) -> str:
+        ligature_svg_parts = []
+        abs_positions = {}
+        q = [(self.graph.root_id, parent_offset_x, parent_offset_y)]
+        
+        while q:
+            node_id, p_abs_x, p_abs_y = q.pop(0)
+            node = self.graph.get_object(node_id)
+            if node.node_type != GraphObjectType.CUT: continue
+            
+            for content_id in node.contents:
+                item = self.graph.get_object(content_id)
+                item_layout = self.layout.get(item.id, {})
+                item_abs_x = p_abs_x + item_layout.get("x", 0)
+                item_abs_y = p_abs_y + item_layout.get("y", 0)
+                abs_positions[item.id] = (item_abs_x, item_abs_y)
+                if item.node_type == GraphObjectType.CUT:
+                    q.append((item.id, item_abs_x, item_abs_y))
+
+        all_ligatures = [obj for obj in self.graph.objects.values() if isinstance(obj, Hyperedge)]
+        for lig in all_ligatures:
+            points = []
+            for ep in lig.endpoints:
+                p_node = self.graph.get_object(ep['node_id'])
+                p_layout = self.layout.get(p_node.id, {})
+                p_abs_pos = abs_positions.get(p_node.id, (0, 0))
+                
+                num_hooks = p_node.properties.get("arity", 0)
+                hook_rel_x = (p_layout.get("width", 0) * (ep['hook_index'] + 1) / (num_hooks + 1))
+                hook_rel_y = p_layout.get("height", 0)
+                points.append((p_abs_pos[0] + hook_rel_x, p_abs_pos[1] + hook_rel_y))
+            
+            if len(points) >= 2:
+                path_data = "M " + " L ".join([f"{x:.2f},{y:.2f}" for x in points])
+                ligature_svg_parts.append(f'<path d="{path_data}" stroke="{self.config["ligature_color"]}" stroke-width="{self.config["stroke_width"]}" fill="none" stroke-linecap="round"/>')
+            elif len(points) == 1:
+                # Draw a stub for a singly-connected line
+                x1, y1 = points[0]
+                y2 = y1 + self.config['line_stub_length']
+                ligature_svg_parts.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x1:.2f}" y2="{y2:.2f}" stroke="{self.config["ligature_color"]}" stroke-width="{self.config["stroke_width"]}" stroke-linecap="round"/>')
+            
+        return "\n".join(ligature_svg_parts)
+
     def to_svg(self) -> str:
         self.layout.clear()
         self._calculate_layout(self.graph.root_id)
-        canvas_layout = self.layout[self.graph.root_id]
+        canvas_layout = self.layout.get(self.graph.root_id, {})
         
         width = canvas_layout.get("width", 100) + 2 * self.config["padding"]
         height = canvas_layout.get("height", 100) + 2 * self.config["padding"]
 
-        svg_body = self._render_node(self.graph.root_id, self.config["padding"], self.config["padding"])
-        
-        # NOTE: Ligature rendering would also need to be refactored to use the new model.
-        # This involves finding absolute positions of hooks based on the new layout data.
+        canvas_padding = self.config["padding"]
+        svg_body = self._render_node(self.graph.root_id, canvas_padding, canvas_padding)
+        ligature_svg = self._render_ligatures(canvas_padding, canvas_padding)
 
         return f"""<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" version="1.1">
-    <rect width="100%" height="100%" fill="white" />
     <g transform="translate(0, 0)">
     {"\n".join(svg_body)}
+    {ligature_svg}
     </g>
 </svg>"""
