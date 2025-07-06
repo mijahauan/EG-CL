@@ -2,7 +2,7 @@
 from __future__ import annotations
 import uuid
 from enum import Enum, auto
-from typing import List, Optional, Set, Dict
+from typing import List, Optional, Set, Dict, Tuple
 
 class PredicateType(Enum):
     """Enumeration for the type of a Predicate, following Dau's extensions."""
@@ -27,11 +27,22 @@ class Context:
             p = p.parent
         return level
 
+    def is_positive(self) -> bool:
+        """A context is positive if it's evenly enclosed."""
+        return self.get_nesting_level() % 2 == 0
+
+    def is_negative(self) -> bool:
+        """A context is negative if it's oddly enclosed."""
+        return not self.is_positive()
+
 class Ligature:
     """Represents a single, continuous Line of Identity."""
     def __init__(self):
         self.id = str(uuid.uuid4())
         self.hooks: Set[Hook] = set()
+
+    def __repr__(self):
+        return f"Ligature(id={self.id[:4]}..., hooks={len(self.hooks)})"
 
     def get_starting_context(self) -> Context:
         """
@@ -39,7 +50,7 @@ class Ligature:
         This is the Least Common Ancestor (LCA) of all contexts its hooks appear in.
         """
         if not self.hooks:
-            raise ValueError("Ligature is not connected to any predicate.")
+            raise ValueError("Ligature has no hooks to determine a starting context.")
 
         paths = []
         for hook in self.hooks:
@@ -50,19 +61,24 @@ class Ligature:
                 curr = curr.parent
             paths.append(path)
         
+        if not paths:
+             raise ValueError("Could not determine paths for ligature's hooks.")
+
+        # The common ancestors are the intersection of all paths to the root.
         common_ancestors = set(paths[0])
         for other_path in paths[1:]:
             common_ancestors.intersection_update(set(other_path))
         
         if not common_ancestors:
-             # This should not happen in a well-formed graph.
              raise ValueError("Could not find a common ancestor for the ligature's hooks.")
         
+        # The LCA is the one with the greatest nesting level (closest to the leaves).
         return max(common_ancestors, key=lambda c: c.get_nesting_level())
 
 class Hook:
     """A connection point on a Predicate."""
     def __init__(self, predicate: Predicate, index: int):
+        self.id = str(uuid.uuid4()) # Unique ID for each hook
         self.predicate = predicate
         self.index = index
         self.ligature: Optional[Ligature] = None
