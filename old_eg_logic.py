@@ -209,16 +209,14 @@ class ClifTranslator:
         
         def get_ligature_signature(lig: Ligature) -> str:
             """Creates a canonical, sortable signature for a ligature."""
-            if not lig.hooks: return ""
+            if not lig.hooks: return lig.id 
             
             hook_sigs = []
             for h in lig.hooks:
                 p = h.predicate
-                # Signature is a tuple of stable properties, converted to a string.
-                sig_tuple = (p.context.get_nesting_level(), p.name, p.arity, h.index)
-                hook_sigs.append(str(sig_tuple))
-            
-            return "".join(sorted(hook_sigs))
+                sig = f"{p.context.get_nesting_level()}-{p.id}-{h.index}"
+                hook_sigs.append(sig)
+            return sorted(hook_sigs)[0]
 
         sorted_ligatures = sorted(list(all_ligatures), key=get_ligature_signature)
 
