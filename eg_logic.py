@@ -114,15 +114,27 @@ class EGEditor:
         self.connect(p1.hooks[0], p2.hooks[0])
 
     def move_ligature_branch(self, hook_to_move: Hook, new_anchor_hook: Hook):
+        """
+        Moves a predicate's connection (a branch) from its current point on a ligature
+        to another point on the same ligature, within the same context.
+        This is a derived rule that preserves logical equivalence.
+        """
         if not self.validator.can_move_ligature_branch(hook_to_move, new_anchor_hook):
             raise ValueError("Invalid branch move operation.")
+        
         original_ligature = hook_to_move.ligature
+        
         if original_ligature:
             original_ligature.hooks.discard(hook_to_move)
         hook_to_move.ligature = None
+
         self.connect(hook_to_move, new_anchor_hook)
         
     def split_branching_point(self, ligature: Ligature, hooks_to_move: List[Hook], target_context: Context):
+        """
+        Moves a branching point across a cut by splitting the ligature.
+        This is a complex derived rule.
+        """
         print("NOTE: split_branching_point is a complex derived rule and is not fully implemented.")
         pass
 
@@ -173,6 +185,7 @@ class Validator:
         if not (p1.type == PredicateType.CONSTANT and p2.type == PredicateType.CONSTANT): return False
         return p1.name == p2.name
     def can_move_ligature_branch(self, hook_to_move: Hook, new_anchor_hook: Hook) -> bool:
+        """Validates if a branch can be moved."""
         if not hook_to_move.ligature or not new_anchor_hook.ligature: return False
         if hook_to_move.ligature.id != new_anchor_hook.ligature.id: return False
         ctx1 = hook_to_move.predicate.context
@@ -208,13 +221,13 @@ class ClifTranslator:
         all_ligatures = self._get_all_ligatures()
         
         def get_ligature_signature(lig: Ligature) -> str:
-            """Creates a canonical, sortable signature for a ligature."""
+            """Creates a canonical, sortable signature for a ligature based on its connections."""
             if not lig.hooks: return ""
             
             hook_sigs = []
             for h in lig.hooks:
                 p = h.predicate
-                # Signature is a tuple of stable properties, converted to a string.
+                # Signature is based on stable properties: predicate name, arity, hook index.
                 sig_tuple = (p.context.get_nesting_level(), p.name, p.arity, h.index)
                 hook_sigs.append(str(sig_tuple))
             

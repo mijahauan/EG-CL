@@ -115,6 +115,20 @@ class TestTransformations(unittest.TestCase):
         self.editor.deiterate(Subgraph({p_copy})); translator = ClifTranslator(self.eg)
         self.assertEqual(translator.translate(), "(not (and (P) (not true)))")
         print("  - OK: De-iteration validation and transformation are correct.")
+    def test_move_ligature_branch(self):
+        """Tests the move_ligature_branch derived rule."""
+        p_P = self.editor.add_predicate("P", 1, self.soa)
+        p_Q = self.editor.add_predicate("Q", 1, self.soa)
+        p_R = self.editor.add_predicate("R", 1, self.soa)
+        self.editor.connect(p_P.hooks[0], p_Q.hooks[0])
+        self.editor.connect(p_Q.hooks[0], p_R.hooks[0])
+        translator1 = ClifTranslator(self.eg)
+        clif1 = translator1.translate()
+        self.editor.move_ligature_branch(p_R.hooks[0], p_P.hooks[0])
+        translator2 = ClifTranslator(self.eg)
+        clif2 = translator2.translate()
+        self.assertEqual(clif1, clif2)
+        print("  - OK: move_ligature_branch preserves logical meaning.")
 
 
 class TestClifTranslator(unittest.TestCase):
