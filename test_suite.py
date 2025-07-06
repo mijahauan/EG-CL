@@ -188,6 +188,40 @@ class TestRenderer(unittest.TestCase):
         root = ET.fromstring(svg_output); path_element = root.find('.//{*}path')
         self.assertIsNotNone(path_element, "Ligature <path> element not found in SVG.")
         print("  - OK: Ligature rendered as an SVG path.")
+    ## NEW ##
+    def test_render_deeply_nested_graph(self):
+        """
+        Tests the bottom-up layout engine with a complex nested graph.
+        The setup creates items in the order: P, (Q, (R S), T)
+        """
+        p = self.editor.add_predicate("P", 0, self.soa)
+        cut1 = self.editor.add_cut(self.soa)
+        q = self.editor.add_predicate("Q", 0, cut1)
+        cut2 = self.editor.add_cut(cut1)
+        r = self.editor.add_predicate("R", 0, cut2)
+        s = self.editor.add_predicate("S", 0, cut2)
+        t = self.editor.add_predicate("T", 0, cut1)
+        
+        svg_output = self.renderer.to_svg()
+
+        root = ET.fromstring(svg_output)
+        ns = {'svg': 'http://www.w3.org/2000/svg'}
+        
+        texts = {t.text: (float(t.get('x')), float(t.get('y'))) for t in root.findall('.//svg:text', ns)}
+        self.assertIn('P', texts); self.assertIn('Q', texts); self.assertIn('R', texts)
+        self.assertIn('S', texts); self.assertIn('T', texts)
+
+        # The renderer lays out predicates first, then child cuts.
+        # The contents of cut1 are predicates [Q, T] and child [cut2].
+        # Therefore, the layout order within cut1 will be: Q, T, then the (R S) cut.
+        
+        # Assert horizontal alignment reflects this actual layout.
+        self.assertTrue(texts['Q'][0] < texts['T'][0], "Q should be laid out before T")
+        self.assertTrue(texts['T'][0] < texts['R'][0], "T should be laid out before the (R S) cut")
+        self.assertTrue(texts['T'][0] < texts['S'][0], "T should be laid out before the (R S) cut")
+        
+        print("  - OK: Deeply nested graph layout is geometrically correct according to the 'predicates first' rule.")
+
 
 # ######################################################################
 # ##--- CLIF & ADVANCED LOGIC TESTS (from test_logic_advanced.py) ---##

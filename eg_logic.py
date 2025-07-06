@@ -308,13 +308,19 @@ class Validator:
             from itertools import combinations
             if len(potential_preds) >= len(selection_preds):
                 for combo in combinations(potential_preds, len(selection_preds)):
-                    candidate_subgraph = Subgraph(set(combo))
+                    combo_set = set(combo)
+                    
+                    # Add only the ligatures that are internal to the combo
                     ligatures_to_add = set()
-                    for p in combo:
+                    for p in combo_set:
                         for h in p.hooks:
                             if h.ligature:
-                                ligatures_to_add.add(h.ligature)
-                    candidate_subgraph.elements.update(ligatures_to_add)
+                                # Check if all hooks on this ligature connect to predicates within the combo
+                                if all(other_h.predicate in combo_set for other_h in h.ligature.hooks):
+                                    ligatures_to_add.add(h.ligature)
+                    
+                    # Create the candidate subgraph with predicates and internal ligatures
+                    candidate_subgraph = Subgraph(combo_set.union(ligatures_to_add))
 
                     if self._are_isomorphic(selection, candidate_subgraph):
                         return True
