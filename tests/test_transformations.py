@@ -1,0 +1,80 @@
+import unittest
+from eg_editor import EGEditor
+from eg_model import Predicate, Cut, LineOfIdentity
+
+class TestTransformations(unittest.TestCase):
+    def setUp(self):
+        self.editor = EGEditor()
+        self.model = self.editor.model
+
+    def test_can_insert_and_erase(self):
+        """Validates the Insertion (odd contexts) and Erasure (even contexts) rules."""
+        c1 = self.editor.add_cut()
+        self.assertTrue(self.editor.validator.is_positive_context('SA'))
+        self.assertTrue(self.editor.validator.is_negative_context(c1))
+
+    def test_insert_and_remove_double_cut(self):
+        """Test wrapping a predicate in a double cut and removing it."""
+        p_id = self.editor.add_predicate('P', 1, parent_id='SA')
+        outer_cut_id, inner_cut_id = self.editor.insert_double_cut(selection_ids=[p_id])
+        self.assertEqual(self.editor.get_parent_context(p_id), inner_cut_id)
+        self.editor.remove_double_cut(outer_cut_id)
+        self.assertEqual(self.editor.get_parent_context(p_id), 'SA')
+
+    def test_insert_empty_double_cut(self):
+        """Tests inserting a double cut onto an empty area."""
+        initial_cuts = len([o for o in self.model.objects.values() if isinstance(o, Cut)])
+        self.editor.insert_double_cut()
+        final_cuts = len([o for o in self.model.objects.values() if isinstance(o, Cut)])
+        self.assertEqual(final_cuts, initial_cuts + 2)
+
+    def test_iteration_validation_and_action(self):
+        """Test the iteration rule and its validation."""
+        p_id = self.editor.add_predicate('P', 1, parent_id='SA')
+        c1_id = self.editor.add_cut(parent_id='SA')
+        c2_id = self.editor.add_cut(parent_id=c1_id)
+        self.assertTrue(self.editor.validator.can_iterate([p_id], c2_id))
+        self.editor.iterate([p_id], c2_id)
+        c2_children_preds = [
+            obj for obj in self.model.objects.values()
+            if isinstance(obj, Predicate) and self.editor.get_parent_context(obj.id) == c2_id
+        ]
+        self.assertEqual(len(c2_children_preds), 1)
+
+    def test_iteration_with_external_ligature(self):
+        """Tests iterating a subgraph connected to an external ligature."""
+        p_id = self.editor.add_predicate('P', 1, parent_id='SA')
+        c1_id = self.editor.add_cut(parent_id='SA')
+        q_id = self.editor.add_predicate('Q', 1, parent_id=c1_id)
+        c2_id = self.editor.add_cut(parent_id=c1_id)
+        self.editor.connect([(p_id, 1), (q_id, 1)])
+        original_line_id = self.model.get_object(q_id).hooks[1]
+        self.editor.iterate([q_id], c2_id)
+        q_copy_id = next(
+            child.id for child in (self.model.get_object(obj_id) for obj_id in self.model.get_object(c2_id).children)
+            if isinstance(child, Predicate) and child.label == 'Q'
+        )
+        self.assertIsNotNone(q_copy_id)
+        q_copy = self.model.get_object(q_copy_id)
+        self.assertEqual(q_copy.hooks[1], original_line_id)
+
+    def test_existence_of_constants_rule(self):
+        """Tests inserting and erasing a standalone constant."""
+        initial_preds = len([o for o in self.model.objects.values() if isinstance(o, Predicate)])
+        initial_lines = len([o for o in self.model.objects.values() if isinstance(o, LineOfIdentity)])
+        const_id = self.editor.add_constant('Socrates')
+        self.assertEqual(len([o for o in self.model.objects.values() if isinstance(o, Predicate)]), initial_preds + 1)
+        self.assertEqual(len([o for o in self.model.objects.values() if isinstance(o, LineOfIdentity)]), initial_lines + 1)
+        self.editor.erase_constant(const_id)
+        self.assertEqual(len([o for o in self.model.objects.values() if isinstance(o, Predicate)]), initial_preds)
+        self.assertEqual(len([o for o in self.model.objects.values() if isinstance(o, LineOfIdentity)]), initial_lines)
+
+    def test_total_function_rule(self):
+        """Tests applying the total function rule."""
+        input_lig_id = self.editor.add_ligature()
+        input_line_id = self.model.get_object(input_lig_id).line_of_identity_id
+        func_id = self.editor.apply_total_function_rule('PlusOne', 2, [input_line_id])
+        func_pred = self.model.get_object(func_id)
+        self.assertEqual(func_pred.hooks[1], input_line_id)
+        self.assertIsNotNone(func_pred.hooks[2])
+        self.assertNotEqual(func_pred.hooks[1], func_pred.hooks[2])

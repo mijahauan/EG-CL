@@ -2,118 +2,126 @@ from collections import defaultdict
 from eg_model import Cut, Predicate
 
 class ClifTranslator:
-    """Translates an EG model graph into CLIF notation."""
-    def __init__(self, model):
-        self.model = model
+    """Translates an EG model graph into CLIF notation using a robust, two-pass approach."""
+    def __init__(self, editor):
+        self.editor = editor
+        self.model = editor.model
         self.variable_counter = 0
-        self.variables = {}  # ligature_id -> variable_name
+        self.line_to_variable_map = {}
+        # Caches the calculated scope for each line to avoid redundant computation
+        self.line_scope_cache = {}
 
-    def _get_variable_for_ligature(self, ligature_id):
-        if ligature_id not in self.variables:
+    def _get_line_scope(self, line_id):
+        """Finds the shallowest context (LCA) where a line appears."""
+        if line_id in self.line_scope_cache:
+            return self.line_scope_cache[line_id]
+
+        line = self.model.get_object(line_id)
+        if not line: return None
+
+        attachment_contexts = set()
+        # A line's attachments are spread across its constituent ligatures
+        for lig_id in line.ligatures:
+            lig = self.model.get_object(lig_id)
+            if lig:
+                for pred_id, _ in lig.attachments:
+                    parent_context = self.editor.get_parent_context(pred_id)
+                    if parent_context:
+                        attachment_contexts.add(parent_context)
+        
+        if not attachment_contexts:
+            # A detached line "exists" on the sheet of assertion by default
+            return self.model.sheet_of_assertion.id
+
+        # The scope is the Least Common Ancestor of all its attachment points
+        lca = self.editor._find_lca(list(attachment_contexts))
+        self.line_scope_cache[line_id] = lca
+        return lca
+
+    def _get_variable_for_line(self, line_id):
+        """Creates or retrieves a variable name for a given Line of Identity."""
+        if line_id not in self.line_to_variable_map:
             self.variable_counter += 1
-            self.variables[ligature_id] = f"?v{self.variable_counter}"
-        return self.variables[ligature_id]
+            self.line_to_variable_map[line_id] = f"?v{self.variable_counter}"
+        return self.line_to_variable_map[line_id]
 
     def translate(self):
-        self.variables.clear()
+        """Starts the translation from the top-level Sheet of Assertion."""
+        self.line_to_variable_map.clear()
         self.variable_counter = 0
-        return self._translate_context(self.model.sheet_of_assertion.id)
+        self.line_scope_cache.clear()
+        return self._translate_context(self.model.sheet_of_assertion)
 
-    def _translate_context(self, context_id):
-        context = self.model.get_object(context_id)
-        if not context:
-            return ""
-
+    def _translate_context(self, context):
+        """Recursively translates a context, handling variable quantification."""
         clauses = []
-        quantified_vars = set()
+        lines_in_subgraph = set()
 
+        # First pass: discover all lines that appear anywhere in this context's subtree
+        nodes_to_visit = [context]
+        visited_contexts = {context.id}
+        while nodes_to_visit:
+            current_context = nodes_to_visit.pop(0)
+            for child_id in current_context.children:
+                child = self.model.get_object(child_id)
+                if isinstance(child, Predicate):
+                    for line_id in child.hooks.values():
+                        if line_id:
+                            lines_in_subgraph.add(line_id)
+                elif isinstance(child, Cut) and child.id not in visited_contexts:
+                    nodes_to_visit.append(child)
+                    visited_contexts.add(child.id)
+
+        # Determine which of those lines are scoped to *this* context specifically
+        vars_to_quantify = {
+            self._get_variable_for_line(line_id)
+            for line_id in lines_in_subgraph
+            if self._get_line_scope(line_id) == context.id
+        }
+        
+        # Second pass: translate the immediate children of this context
         for child_id in context.children:
             child = self.model.get_object(child_id)
             if isinstance(child, Predicate):
-                clause, vars = self._translate_predicate(child)
-                clauses.append(clause)
-                quantified_vars.update(vars)
+                clauses.append(self._translate_predicate(child))
             elif isinstance(child, Cut):
-                clause = self._translate_cut(child)
-                clauses.append(clause)
-
-        # Remove variables that are defined in an outer scope
-        parent_id = self.model.get_object(context_id).parent_id
-        outer_vars = self._get_vars_in_context_and_above(parent_id)
-        quantified_vars -= outer_vars
-
-        if not clauses:
-            return ""
+                clauses.append(self._translate_context(child))
         
-        # Sort clauses for deterministic output
+        if not clauses: return ""
+        
         sorted_clauses = sorted(clauses)
         body = f"(and {' '.join(sorted_clauses)})" if len(sorted_clauses) > 1 else sorted_clauses[0]
+        
+        # If the context is a cut, wrap its body in a 'not'
+        if isinstance(context, Cut):
+            body = f"(not {body})"
 
-        if quantified_vars:
-            return f"(exists ({' '.join(sorted(list(quantified_vars)))}) {body})"
+        # Finally, wrap with an 'exists' clause if necessary
+        if vars_to_quantify:
+            return f"(exists ({' '.join(sorted(list(vars_to_quantify)))}) {body})"
         else:
             return body
 
-    def _translate_cut(self, cut):
-        return f"(not {self._translate_context(cut.id)})"
-
     def _translate_predicate(self, predicate):
-        if predicate.p_type == 'constant':
-            # Constants have no variables and are just their label
-            return f"{predicate.label}", set()
-
-        terms = []
-        quantified_vars = set()
-        
-        # Separate input and output hooks for functions
-        output_term = None
-        input_terms = []
-
-        # Handle nullary predicates (no hooks)
-        if not predicate.hooks:
-            return predicate.label, set()
-
-        for hook_index, ligature_id in sorted(predicate.hooks.items()):
-            if ligature_id:
-                var_name = self._get_variable_for_ligature(ligature_id)
-                quantified_vars.add(var_name)
-                if predicate.is_functional and hook_index == predicate.output_hook:
-                    output_term = var_name
-                else:
-                    input_terms.append(var_name)
-            else:
-                # Unconnected hooks might be existentially quantified fresh variables
-                self.variable_counter += 1
-                var_name = f"?v{self.variable_counter}"
-                quantified_vars.add(var_name)
-                if predicate.is_functional and hook_index == predicate.output_hook:
-                    output_term = var_name
-                else:
-                    input_terms.append(var_name)
-        
+        """Translates a Predicate into its CLIF representation."""
         if predicate.is_functional:
-            if not output_term:
-                # If output is unconnected, it's a fresh variable
-                self.variable_counter += 1
-                output_term = f"?v{self.variable_counter}"
-                quantified_vars.add(output_term)
-            
-            func_call = f"({predicate.label} {' '.join(input_terms)})"
-            return f"(= {output_term} {func_call})", quantified_vars
+            output_hook = predicate.output_hook
+            # Ensure all hooks have a line before proceeding
+            if not all(predicate.hooks.get(i) for i in predicate.hooks):
+                return "(error: functional predicate has unconnected hooks)"
+
+            output_var = self._get_variable_for_line(predicate.hooks.get(output_hook))
+            input_vars = [
+                self._get_variable_for_line(predicate.hooks.get(i))
+                for i in sorted(predicate.hooks.keys()) if i != output_hook
+            ]
+            func_call = f"({predicate.label}{' ' if input_vars else ''}{' '.join(input_vars)})"
+            return f"(= {output_var} {func_call})"
         else:
-            return f"({predicate.label} {' '.join(input_terms)})", quantified_vars
-            
-    def _get_vars_in_context_and_above(self, context_id):
-        vars_in_scope = set()
-        current_id = context_id
-        while current_id is not None:
-            context = self.model.get_object(current_id)
-            if hasattr(context, 'children'):
-                for child_id in context.children:
-                    child = self.model.get_object(child_id)
-                    if isinstance(child, Predicate):
-                        for lig_id in child.hooks.values():
-                            if lig_id and lig_id in self.variables:
-                                vars_in_scope.add(self.variables[lig_id])
-            current_id = getattr(context, 'parent_id', None)
-        return vars_in_scope
+            if not predicate.hooks:
+                return predicate.label
+            terms = [
+                self._get_variable_for_line(predicate.hooks.get(i))
+                for i in sorted(predicate.hooks.keys()) if predicate.hooks.get(i)
+            ]
+            return f"({predicate.label} {' '.join(terms)})"

@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QRectF, QPointF
 class HookItem(QGraphicsEllipseItem):
     """A small, clickable circle representing a predicate's hook."""
     def __init__(self, owner_id, hook_index, x, y, parent=None):
-        super().__init__(-4, -4, 8, 8, parent) # Centered ellipse
+        super().__init__(-4, -4, 8, 8, parent)
         self.setPos(x, y)
         self.owner_id = owner_id
         self.hook_index = hook_index
@@ -13,35 +13,63 @@ class HookItem(QGraphicsEllipseItem):
         self.setPen(QPen(Qt.black, 1))
 
 class LigatureItem(QGraphicsPathItem):
-    """A QGraphicsItem to visually represent a ligature."""
-    def __init__(self, ligature_id, start_item: HookItem, end_item: HookItem, parent=None):
+    """A flexible QGraphicsItem to visually represent a ligature."""
+    def __init__(self, ligature_id, attachments, parent=None):
         super().__init__(parent)
         self.ligature_id = ligature_id
-        self.start_item = start_item
-        self.end_item = end_item
+        # attachments can be a mix of HookItems and QPointFs
+        self.attachments = attachments
         self.setPen(QPen(Qt.black, 2))
-        self.setFlag(QGraphicsItem.ItemIsSelectable, True) # Make ligature selectable
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.update_path()
+
+    def get_pos_of_attachment(self, attachment):
+        """Helper to get the scene position of any attachment type."""
+        if isinstance(attachment, HookItem):
+            return attachment.scenePos()
+        elif isinstance(attachment, QPointF):
+            return attachment
+        return QPointF()
 
     def update_path(self):
-        """Updates the path of the ligature based on its connected hooks."""
+        """Updates the path of the ligature based on its attachments."""
+        if len(self.attachments) < 2:
+            self.setPath(QPainterPath())
+            return
+            
         path = QPainterPath()
-        # Get scene positions of the hooks
-        start_pos = self.start_item.scenePos()
-        end_pos = self.end_item.scenePos()
-        # Map scene positions to this item's coordinate system
+        # Start the path at the first attachment
+        start_pos = self.get_pos_of_attachment(self.attachments[0])
         path.moveTo(self.mapFromScene(start_pos))
-        path.lineTo(self.mapFromScene(end_pos))
+        
+        # Draw lines to all subsequent attachments
+        for attachment in self.attachments[1:]:
+            pos = self.get_pos_of_attachment(attachment)
+            path.lineTo(self.mapFromScene(pos))
         self.setPath(path)
 
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene():
+            move_delta = value - self.pos()
+            # Move any attached predicates
+            for attachment in self.attachments:
+                if isinstance(attachment, HookItem) and attachment.parentItem():
+                    # Use a flag to avoid recursive moves
+                    if not hasattr(attachment.parentItem(), '_is_moving'):
+                        attachment.parentItem()._is_moving = True
+                        attachment.parentItem().moveBy(move_delta.x(), move_delta.y())
+                        del attachment.parentItem()._is_moving
+            # Also move any free points
+            for i, attachment in enumerate(self.attachments):
+                if isinstance(attachment, QPointF):
+                    self.attachments[i] = attachment + move_delta
+
+        return super().itemChange(change, value)
+
     def paint(self, painter, option, widget):
-        """
-        Overridden paint method to ensure the path is always up-to-date
-        before drawing, which keeps it attached to moving items.
-        """
         self.update_path()
         super().paint(painter, option, widget)
-
 
 class EnhancedCutItem(QGraphicsEllipseItem):
     """A QGraphicsItem representing a Cut, enabling movement."""
@@ -60,17 +88,14 @@ class EnhancedPredicateItem(QGraphicsItem):
         super().__init__(parent)
         self.predicate_id = predicate_id
         self.setPos(x, y)
-        
         self.text = QGraphicsTextItem(label, self)
-        self.hooks = {} # hook_index -> HookItem
-        
+        self.hooks = {}
         text_width = self.text.boundingRect().width()
         for i in range(1, hook_count + 1):
             hook_x = (i / (hook_count + 1)) * text_width
             hook_y = self.text.boundingRect().height() + 5
             hook = HookItem(predicate_id, i, hook_x, hook_y, self)
             self.hooks[i] = hook
-
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
