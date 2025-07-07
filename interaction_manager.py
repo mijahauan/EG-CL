@@ -13,15 +13,18 @@ class InteractionMode(Enum):
     CREATE_LIGATURE = 4
 
 class InteractionManager:
-    def __init__(self, view, editor: EGEditor):
+    """Manages user interactions with the graphics scene in a state-driven way."""
+    def __init__(self, view, editor: EGEditor, on_item_created):
         self.view = view
         self.scene = view.scene()
         self.editor = editor
+        self.on_item_created = on_item_created
         self.mode = InteractionMode.SELECT
-        self.selection_box = None
+        
+        # State for an action in progress
+        self.preview_item = None
         self.start_pos = None
-        self.preview_line = None
-        self.start_item = None
+        self.start_hook = None
 
     def set_mode(self, mode: InteractionMode):
         self.mode = mode
@@ -30,77 +33,81 @@ class InteractionManager:
     def mouse_press(self, event):
         self.start_pos = self.view.mapToScene(event.position().toPoint())
         items_at_pos = self.scene.items(self.start_pos)
-        self.start_item = items_at_pos[0] if items_at_pos else None
+        top_item = items_at_pos[0] if items_at_pos else None
 
-        if self.mode == InteractionMode.CREATE_LIGATURE or isinstance(self.start_item, HookItem):
-            self.preview_line = QGraphicsLineItem()
-            self.preview_line.setPen(QPen(Qt.red, 1.5, Qt.DashLine))
-            self.scene.addItem(self.preview_line)
-            self.preview_line.setLine(QLineF(self.start_pos, self.start_pos))
+        # A hook click can start a ligature, regardless of the current mode.
+        if isinstance(top_item, HookItem):
+            self.start_hook = top_item
+            self.preview_item = QGraphicsLineItem()
+            self.preview_item.setPen(QPen(Qt.red, 1.5, Qt.DashLine))
+            self.scene.addItem(self.preview_item)
+            self.preview_item.setLine(QLineF(self.start_pos, self.start_pos))
+            return True
+
+        if self.mode == InteractionMode.CREATE_CUT:
+            self.preview_item = QGraphicsRectItem()
+            self.preview_item.setPen(QPen(Qt.blue, 1, Qt.DashLine))
+            self.scene.addItem(self.preview_item)
             return True
         
-        elif self.mode == InteractionMode.SELECT and not any(item.flags() & QGraphicsItem.ItemIsSelectable for item in items_at_pos):
-            self.selection_box = QGraphicsRectItem()
-            self.selection_box.setPen(QPen(Qt.black, 1, Qt.DashLine))
-            self.scene.addItem(self.selection_box)
-        
+        elif self.mode == InteractionMode.CREATE_LIGATURE:
+            self.preview_item = QGraphicsLineItem()
+            self.preview_item.setPen(QPen(Qt.blue, 1.5, Qt.DashLine))
+            self.scene.addItem(self.preview_item)
+            self.preview_item.setLine(QLineF(self.start_pos, self.start_pos))
+            return True
+            
+        elif self.mode == InteractionMode.SELECT and top_item is None:
+            self.preview_item = QGraphicsRectItem()
+            self.preview_item.setPen(QPen(Qt.black, 1, Qt.DashLine))
+            self.scene.addItem(self.preview_item)
+            return True
+
         return False
 
     def mouse_move(self, event):
+        if not self.preview_item: return False
+        
         end_pos = self.view.mapToScene(event.position().toPoint())
-        if self.preview_line:
-            self.preview_line.setLine(QLineF(self.start_pos, end_pos))
-            return True
-        elif self.selection_box:
-            rect = QRectF(self.start_pos, end_pos).normalized()
-            self.selection_box.setRect(rect)
-            return True
-        return False
+        if isinstance(self.preview_item, QGraphicsLineItem):
+            self.preview_item.setLine(QLineF(self.start_pos, end_pos))
+        elif isinstance(self.preview_item, QGraphicsRectItem):
+            self.preview_item.setRect(QRectF(self.start_pos, end_pos).normalized())
+        return True
 
     def mouse_release(self, event):
-        if not self.preview_line:
-            # Handle non-ligature-drawing releases
-            if self.selection_box:
-                # ... selection box logic ...
-                self.scene.removeItem(self.selection_box)
-                self.selection_box = None
-            return
+        rect = None
+        if self.preview_item and isinstance(self.preview_item, QGraphicsRectItem):
+            rect = self.preview_item.rect()
 
-        # --- Ligature Drawing Release Logic ---
-        self.scene.removeItem(self.preview_line)
-        self.preview_line = None
+        if self.preview_item:
+            self.scene.removeItem(self.preview_item)
+            self.preview_item = None
+
         end_pos = self.view.mapToScene(event.position().toPoint())
         items_at_end = self.scene.items(end_pos)
         end_item = items_at_end[0] if items_at_end else None
-
-        start_hook = self.start_item if isinstance(self.start_item, HookItem) else None
-        end_hook = end_item if isinstance(end_item, HookItem) else None
-        target_ligature = end_item if isinstance(end_item, LigatureItem) else None
-
-        if start_hook and end_hook and start_hook != end_hook:
-            # Case 1: Hook to Hook
-            lig_id = self.editor.connect([(start_hook.owner_id, start_hook.hook_index), (end_hook.owner_id, end_hook.hook_index)])
-            self.scene.addItem(LigatureItem(lig_id, [start_hook, end_hook]))
         
-        elif start_hook and target_ligature:
-            # Case 2: Hook to existing Ligature
-            lig_id = target_ligature.ligature_id
-            self.editor.connect([(start_hook.owner_id, start_hook.hook_index), *self.editor.model.get_object(lig_id).connections])
-            new_attachments = [start_hook] + target_ligature.attachments
-            self.scene.removeItem(target_ligature)
-            self.scene.addItem(LigatureItem(lig_id, new_attachments))
-
-        elif start_hook:
-            # Case 3: Hook to Empty Space
-            lig_id = self.editor.add_ligature()
-            self.editor.connect([(start_hook.owner_id, start_hook.hook_index)])
-            self.scene.addItem(LigatureItem(lig_id, [start_hook, end_pos]))
-
-        elif self.mode == InteractionMode.CREATE_LIGATURE:
-            # Case 4: Empty Space to Empty Space
-            lig_id = self.editor.add_ligature()
-            self.scene.addItem(LigatureItem(lig_id, [self.start_pos, end_pos]))
-
-        self.start_item = None
-        if self.mode != InteractionMode.SELECT:
+        if self.start_hook:
+            end_hook = end_item if isinstance(end_item, HookItem) else None
+            if end_hook and self.start_hook != end_hook:
+                self.on_item_created('ligature-connect-hooks', start_hook=self.start_hook, end_hook=end_hook)
+        
+        elif self.mode == InteractionMode.CREATE_CUT and rect and rect.width() > 5:
+            self.on_item_created('cut', rect=rect)
             self.set_mode(InteractionMode.SELECT)
+            
+        elif self.mode == InteractionMode.CREATE_LIGATURE and self.start_pos != end_pos:
+            self.on_item_created('ligature-detached', start_pos=self.start_pos, end_pos=end_pos)
+            self.set_mode(InteractionMode.SELECT)
+            
+        elif self.mode == InteractionMode.CREATE_PREDICATE:
+            self.on_item_created('predicate', pos=end_pos, label="P", hooks=1)
+            self.set_mode(InteractionMode.SELECT)
+        
+        elif self.mode == InteractionMode.SELECT and rect:
+            path = QPainterPath(); path.addRect(rect)
+            self.scene.setSelectionArea(path)
+
+        self.start_pos = None
+        self.start_hook = None

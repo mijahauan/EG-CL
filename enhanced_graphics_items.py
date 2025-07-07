@@ -17,15 +17,14 @@ class LigatureItem(QGraphicsPathItem):
     def __init__(self, ligature_id, attachments, parent=None):
         super().__init__(parent)
         self.ligature_id = ligature_id
-        # attachments can be a mix of HookItems and QPointFs
         self.attachments = attachments
         self.setPen(QPen(Qt.black, 2))
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setZValue(1)
         self.update_path()
 
     def get_pos_of_attachment(self, attachment):
-        """Helper to get the scene position of any attachment type."""
         if isinstance(attachment, HookItem):
             return attachment.scenePos()
         elif isinstance(attachment, QPointF):
@@ -33,17 +32,14 @@ class LigatureItem(QGraphicsPathItem):
         return QPointF()
 
     def update_path(self):
-        """Updates the path of the ligature based on its attachments."""
-        if len(self.attachments) < 2:
+        if not isinstance(self.attachments, list) or len(self.attachments) < 2:
             self.setPath(QPainterPath())
             return
             
         path = QPainterPath()
-        # Start the path at the first attachment
         start_pos = self.get_pos_of_attachment(self.attachments[0])
         path.moveTo(self.mapFromScene(start_pos))
         
-        # Draw lines to all subsequent attachments
         for attachment in self.attachments[1:]:
             pos = self.get_pos_of_attachment(attachment)
             path.lineTo(self.mapFromScene(pos))
@@ -52,18 +48,22 @@ class LigatureItem(QGraphicsPathItem):
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionChange and self.scene():
             move_delta = value - self.pos()
-            # Move any attached predicates
+            
+            items_to_move = set()
             for attachment in self.attachments:
                 if isinstance(attachment, HookItem) and attachment.parentItem():
-                    # Use a flag to avoid recursive moves
-                    if not hasattr(attachment.parentItem(), '_is_moving'):
-                        attachment.parentItem()._is_moving = True
-                        attachment.parentItem().moveBy(move_delta.x(), move_delta.y())
-                        del attachment.parentItem()._is_moving
-            # Also move any free points
+                    items_to_move.add(attachment.parentItem())
+            
+            for item in items_to_move:
+                item.setPos(item.pos() + move_delta)
+
             for i, attachment in enumerate(self.attachments):
                 if isinstance(attachment, QPointF):
                     self.attachments[i] = attachment + move_delta
+            
+            # After moving children, we reset our own position change to 0,0
+            # because our path will be updated by the paint method.
+            return self.pos() 
 
         return super().itemChange(change, value)
 
@@ -81,6 +81,7 @@ class EnhancedCutItem(QGraphicsEllipseItem):
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setZValue(0)
 
 class EnhancedPredicateItem(QGraphicsItem):
     """A QGraphicsItem for a Predicate, with visible hooks."""
@@ -99,6 +100,7 @@ class EnhancedPredicateItem(QGraphicsItem):
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setZValue(1)
 
     def boundingRect(self):
         return self.childrenBoundingRect()
