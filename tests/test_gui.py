@@ -1,17 +1,18 @@
 import unittest
 from PySide6.QtWidgets import QApplication, QGraphicsScene
 from eg_editor import EGEditor
-from enhanced_main_gui import EnhancedGraphView
-from interaction_manager import InteractionManager, InteractionMode
+from enhanced_main_gui import EnhancedMainWindow
+from interaction_manager import InteractionMode
 from eg_renderer import Renderer
 
 app = QApplication([])
 
 class TestGUI(unittest.TestCase):
     def setUp(self):
-        self.editor = EGEditor()
-        self.scene = QGraphicsScene()
-        self.view = EnhancedGraphView(self.scene, self.editor)
+        """This setup now correctly mimics the main application's structure."""
+        self.window = EnhancedMainWindow()
+        self.editor = self.window.editor
+        self.view = self.window.view
         self.manager = self.view.interaction_manager
         self.renderer = Renderer(self.editor.model)
 
@@ -30,3 +31,4 @@ class TestGUI(unittest.TestCase):
         self.editor.add_predicate('P', 0)
         output = self.renderer.render()
         self.assertIn('>P</text>', output)
+        

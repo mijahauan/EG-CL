@@ -55,7 +55,6 @@ class EnhancedMainWindow(QMainWindow):
         self.item_map[logical_id] = item
 
     def on_item_created(self, item_type, **kwargs):
-        """Callback to add new visual items to the scene."""
         if item_type == 'cut':
             rect = kwargs.get('rect')
             cut_id = self.editor.add_cut()
@@ -95,12 +94,11 @@ class EnhancedMainWindow(QMainWindow):
             action = QAction(name, self)
             action.setCheckable(True)
             action.setChecked(checked)
-            action.triggered.connect(lambda m=mode, a=action: self.view.interaction_manager.set_mode(m))
+            action.triggered.connect(lambda m=mode: self.view.interaction_manager.set_mode(m))
             toolbar.addAction(action)
             mode_group.addAction(action)
 
     def populate_scene(self):
-        """Adds initial items to the scene for demonstration."""
         p_id = self.editor.add_predicate("Human", 1)
         cut_id = self.editor.add_cut()
         q_id = self.editor.add_predicate("Mortal", 1, parent_id=cut_id)

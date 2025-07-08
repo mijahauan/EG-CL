@@ -60,3 +60,16 @@ class TestModelAndLogic(unittest.TestCase):
         self.assertIn(lig1_id, final_line.ligatures)
         self.assertIn(lig2_id, final_line.ligatures)
         self.assertIn(merge_lig_id, final_line.ligatures)
+        
+    def test_three_way_line_merging(self):
+        """Tests that connecting three separate lines results in one line."""
+        p_id = self.editor.add_predicate('P', 1)
+        q_id = self.editor.add_predicate('Q', 1)
+        r_id = self.editor.add_predicate('R', 1)
+        self.editor.connect([(p_id, 1)])
+        self.editor.connect([(q_id, 1)])
+        self.editor.connect([(r_id, 1)])
+        self.editor.connect([(p_id, 1), (q_id, 1), (r_id, 1)])
+        final_line_id = self.model.get_object(p_id).hooks[1]
+        self.assertEqual(final_line_id, self.model.get_object(q_id).hooks[1])
+        self.assertEqual(final_line_id, self.model.get_object(r_id).hooks[1])
