@@ -1,8 +1,8 @@
 from collections import defaultdict
-from eg_model import Cut, Predicate, LineOfIdentity
+from eg_model import Cut, Predicate
 
 class ClifTranslator:
-    """Translates an EG model graph into CLIF notation using a robust, multi-pass approach."""
+    """Translates an EG model graph into CLIF notation using a robust, two-pass approach."""
     def __init__(self, editor):
         self.editor = editor
         self.model = editor.model
@@ -11,13 +11,11 @@ class ClifTranslator:
         self.line_scope_cache = {}
 
     def _get_line_scope(self, line_id):
-        """Finds the shallowest context (LCA) where a line appears."""
         if line_id in self.line_scope_cache:
             return self.line_scope_cache[line_id]
 
         line = self.model.get_object(line_id)
-        if not line or not line.ligatures:
-            return self.model.sheet_of_assertion.id
+        if not line or not line.ligatures: return None
 
         attachment_contexts = {
             self.editor.get_parent_context(pred_id)
@@ -34,44 +32,44 @@ class ClifTranslator:
         self.line_scope_cache[line_id] = lca
         return lca
 
-    def _assign_variable_for_line(self, line_id):
-        """Assigns a variable name to a Line of Identity if it doesn't have one."""
+    def _get_variable_for_line(self, line_id):
         if line_id not in self.line_to_variable_map:
             self.variable_counter += 1
             self.line_to_variable_map[line_id] = f"?v{self.variable_counter}"
         return self.line_to_variable_map[line_id]
 
     def translate(self):
-        """Starts the translation from the top-level Sheet of Assertion."""
         self.line_to_variable_map.clear()
         self.variable_counter = 0
         self.line_scope_cache.clear()
-
-        # Pass 1: Deterministically assign all variable names.
-        all_lines = [obj for obj in self.model.objects.values() if isinstance(obj, LineOfIdentity)]
-        sorted_lines = sorted(all_lines, key=lambda x: x.id)
-        for line in sorted_lines:
-            self._assign_variable_for_line(line.id)
-
-        # Pass 2: Pre-cache all scopes.
-        for line in sorted_lines:
-            self._get_line_scope(line.id)
-
-        # Pass 3: Recursively translate.
         return self._translate_context(self.model.sheet_of_assertion)
 
     def _translate_context(self, context):
-        """Recursively translates a context, handling variable quantification."""
         clauses = []
+        lines_in_subgraph = set()
+
+        nodes_to_visit = [context]
+        visited_contexts = {context.id}
+        while nodes_to_visit:
+            current_context = nodes_to_visit.pop(0)
+            for child_id in current_context.children:
+                child = self.model.get_object(child_id)
+                if isinstance(child, Predicate):
+                    for line_id in child.hooks.values():
+                        if line_id: lines_in_subgraph.add(line_id)
+                elif isinstance(child, Cut) and child.id not in visited_contexts:
+                    nodes_to_visit.append(child)
+                    visited_contexts.add(child.id)
         
-        # Determine which variables are scoped to *this specific context*
+        # Sort discovered lines to ensure deterministic variable assignment
+        sorted_lines = sorted(list(lines_in_subgraph))
+
         vars_to_quantify = {
-            var_name
-            for line_id, var_name in self.line_to_variable_map.items()
-            if self.line_scope_cache.get(line_id) == context.id
+            self._get_variable_for_line(line_id)
+            for line_id in sorted_lines
+            if self._get_line_scope(line_id) == context.id
         }
         
-        # Translate the immediate children of this context
         for child_id in context.children:
             child = self.model.get_object(child_id)
             if isinstance(child, Predicate):
@@ -93,13 +91,12 @@ class ClifTranslator:
             return body
 
     def _translate_predicate(self, predicate):
-        """Translates a Predicate into its CLIF representation."""
         if predicate.is_functional:
             output_hook = predicate.output_hook
-            output_var = self.line_to_variable_map.get(predicate.hooks.get(output_hook))
+            output_var = self._get_variable_for_line(predicate.hooks.get(output_hook))
             
             input_vars = [
-                self.line_to_variable_map.get(predicate.hooks.get(i))
+                self._get_variable_for_line(predicate.hooks.get(i))
                 for i in sorted(predicate.hooks.keys()) if i != output_hook
             ]
             func_call = f"({predicate.label}{' ' if input_vars else ''}{' '.join(input_vars)})"
@@ -108,7 +105,7 @@ class ClifTranslator:
             if not predicate.hooks:
                 return predicate.label
             terms = [
-                self.line_to_variable_map.get(predicate.hooks.get(i))
+                self._get_variable_for_line(predicate.hooks.get(i))
                 for i in sorted(predicate.hooks.keys())
             ]
             return f"({predicate.label} {' '.join(terms)})"
