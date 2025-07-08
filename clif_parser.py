@@ -12,7 +12,7 @@ class ClifParser:
     def parse(self, clif_string: str):
         """Public method to parse a CLIF string."""
         self.variable_map.clear()
-        # A robust tokenizer would be needed for production. This is simplified.
+        # A robust tokenizer is needed for production; this is a simplified version.
         s_expression = self._tokenize(clif_string)
         self._parse_expression(s_expression, 'SA')
 
