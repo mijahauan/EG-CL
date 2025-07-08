@@ -12,7 +12,6 @@ class ClifParser:
     def parse(self, clif_string: str):
         """Public method to parse a CLIF string."""
         self.variable_map.clear()
-        # A robust tokenizer is needed for production; this is a simplified version.
         s_expression = self._tokenize(clif_string)
         self._parse_expression(s_expression, 'SA')
 
@@ -43,43 +42,60 @@ class ClifParser:
 
         operator = expr[0]
         
-        # --- LOGICAL OPERATORS (handle recursion first) ---
         if operator == 'exists':
-            # '(exists (vars...) body)'
-            # The variables are noted, but identity is established by the atomic sentences.
-            # We first parse the body to establish those identities.
             self._parse_expression(expr[2], context_id)
         
         elif operator == 'and':
-            # '(and clause1 clause2 ...)' - parse all clauses recursively.
             for clause in expr[1:]:
                 self._parse_expression(clause, context_id)
         
         elif operator == 'not':
-            # '(not body)' - create a new cut and parse the body inside it.
             cut_id = self.editor.add_cut(parent_id=context_id)
             self._parse_expression(expr[1], cut_id)
         
-        # --- ATOMIC PREDICATE (base case) ---
-        else:
+        elif operator == '=':
+            # Handle function: (= output_var (func_name input_var1 ...))
+            output_var = expr[1]
+            func_call = expr[2]
+            func_name = func_call[0]
+            input_vars = func_call[1:]
+            
+            # Ensure lines of identity exist for all variables
+            all_vars = [output_var] + input_vars
+            for var in all_vars:
+                if var not in self.variable_map:
+                    line = LineOfIdentity()
+                    self.model.add_object(line)
+                    self.variable_map[var] = line.id
+
+            # Create the functional predicate
+            num_hooks = len(input_vars) + 1
+            pred_id = self.editor.add_predicate(func_name, num_hooks, parent_id=context_id, is_functional=True)
+            pred = self.model.get_object(pred_id)
+
+            # Connect input and output hooks
+            for i, var_name in enumerate(input_vars):
+                pred.hooks[i + 1] = self.variable_map[var_name]
+            pred.hooks[num_hooks] = self.variable_map[output_var] # Last hook is output
+            
+            # Create the visual connections
+            for i in range(1, num_hooks + 1):
+                self.editor.connect([(pred_id, i)])
+
+        else: # Standard atomic predicate
             predicate_name = expr[0]
             variable_names = expr[1:]
             
-            # Create the logical predicate in the current context.
             pred_id = self.editor.add_predicate(predicate_name, len(variable_names), parent_id=context_id)
             pred = self.model.get_object(pred_id)
             
-            # Connect hooks to corresponding Lines of Identity.
             for i, var_name in enumerate(variable_names):
                 line_id = self.variable_map.get(var_name)
-                # If this is the first time we see this variable, create its Line of Identity.
                 if line_id is None:
                     line = LineOfIdentity()
                     self.model.add_object(line)
                     line_id = line.id
                     self.variable_map[var_name] = line_id
                 
-                # Logically connect the hook to the line.
                 pred.hooks[i + 1] = line_id
-                # Create the visual ligature segment for this connection.
                 self.editor.connect([(pred_id, i + 1)])

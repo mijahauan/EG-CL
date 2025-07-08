@@ -36,24 +36,31 @@ class TestTranslation(unittest.TestCase):
         self.assertEqual(self.translator.translate(), "(exists (?v1) (Socrates ?v1))")
 
     def test_function_translation(self):
-        # Create two lines. Sorting their IDs ensures deterministic variable assignment (?v1, ?v2)
         line1 = LineOfIdentity()
         line2 = LineOfIdentity()
         if line1.id > line2.id: line1, line2 = line2, line1
-        
         self.editor.model.add_object(line1)
         self.editor.model.add_object(line2)
-
-        # Create the function and manually connect its hooks
         func_id = self.editor.add_predicate('PlusOne', 2, is_functional=True)
         func_pred = self.editor.model.get_object(func_id)
-        # Hook 1 is input (?v1), Hook 2 is output (?v2)
         func_pred.hooks[1] = line1.id
         func_pred.hooks[2] = line2.id
-        
-        # Create visual ligatures so the lines are "in" the graph
         self.editor.connect([(func_id, 1)])
         self.editor.connect([(func_id, 2)])
-        
         expected = "(exists (?v1 ?v2) (= ?v2 (PlusOne ?v1)))"
+        self.assertEqual(self.translator.translate(), expected)
+        
+    def test_deeply_nested_scope(self):
+        """Tests that a variable is quantified at its shallowest context."""
+        # Graph for: (P (Q ?x)) and R(?x)
+        # Should translate to (exists (?v1) (and (R ?v1) (not (P (not (Q ?v1)))))))
+        # Simplified: (exists (?v1) (and (R ?v1) (not (Q ?v1))))
+        r_id = self.editor.add_predicate('R', 1)
+        c1_id = self.editor.add_cut()
+        q_id = self.editor.add_predicate('Q', 1, parent_id=c1_id)
+        
+        # Connect R and Q
+        self.editor.connect([(r_id, 1), (q_id, 1)])
+        
+        expected = "(exists (?v1) (and (R ?v1) (not (Q ?v1))))"
         self.assertEqual(self.translator.translate(), expected)
