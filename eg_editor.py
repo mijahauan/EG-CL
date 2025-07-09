@@ -17,8 +17,6 @@ class EGEditor:
         self.connect([(pred_id, 1)])
         return pred_id
 
-    # ... (the rest of the file remains unchanged but is included for completeness)
-    
     def erase_constant(self, predicate_id):
         pred = self.model.get_object(predicate_id)
         if not pred or pred.p_type != 'constant':

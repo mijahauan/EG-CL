@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from typing import List, Dict, Any
-from eg_model import ExistentialGraph
+from eg_model import GraphModel
 
 ## NEW ##
 # This file defines the high-level data structures for managing application
@@ -31,13 +31,13 @@ class Folio:
     def __init__(self, name: str = "Untitled Folio"):
         self.id = str(uuid.uuid4())
         self.name = name
-        self.graphs: Dict[str, ExistentialGraph] = {}
+        self.graphs: Dict[str, GraphModel] = {}
         self.sessions: Dict[str, GameSession] = {}
 
-    def new_graph(self, name: str) -> ExistentialGraph:
+    def new_graph(self, name: str) -> GraphModel:
         """Creates a new, named Existential Graph within the folio."""
         if name in self.graphs:
             raise ValueError(f"A graph with the name '{name}' already exists in this folio.")
-        graph = ExistentialGraph()
+        graph = GraphModel()
         self.graphs[name] = graph
         return graph
